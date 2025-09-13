@@ -1,12 +1,33 @@
+// server.js
 import express from "express";
 import pool from "./database.js";
 import dotenv from "dotenv";
-import translations from "./translations.json" assert { type: "json" };
+import fs from "fs";
+import path from "path";
+import cors from "cors";
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
+
+// CORS: allow the frontend origin and allow credentials (cookies) if needed
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+app.use(cors({
+  origin: FRONTEND_ORIGIN,
+  credentials: true,
+}));
+
+// load translations.json in a robust way (works regardless of Node JSON import support)
+let translations = {};
+try {
+  const jsonPath = new URL("./translations.json", import.meta.url);
+  const raw = fs.readFileSync(jsonPath, "utf8");
+  translations = JSON.parse(raw);
+} catch (err) {
+  console.error("Failed to load translations.json:", err);
+  translations = { en: {} };
+}
 
 // Middleware to detect language
 function detectLang(req, res, next) {
@@ -18,7 +39,7 @@ app.use(detectLang);
 // Simple translation helper
 function t(lang, key) {
   const l = ["en", "hi", "pa"].includes(lang) ? lang : "en";
-  return translations[l][key] || translations["en"][key] || key;
+  return (translations[l] && translations[l][key]) || (translations["en"] && translations["en"][key]) || key;
 }
 
 // Routes
@@ -26,21 +47,27 @@ app.get("/", (req, res) => {
   res.send("Server is running");
 });
 
+// API endpoints for frontend
+app.get("/api/hello", (req, res) => {
+  res.json({ message: "hello from backend", time: new Date().toISOString() });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+
 app.get("/testdb", async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT 1 + 1 AS result");
     res.json({ message: "DB Connected!", result: rows[0].result });
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: "DB connection failed", error: err.message });
+    res.status(500).json({ message: "DB connection failed", error: err.message });
   }
 });
 
-// Use Render's PORT (fallback to 3000 locally)
+// Start server on Render provided PORT or local fallback
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
 
