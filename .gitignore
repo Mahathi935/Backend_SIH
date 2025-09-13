@@ -1,0 +1,24 @@
+# Node modules (don't commit dependencies)
+node_modules/
+
+# Mac system files
+.DS_Store
+
+# Uploads folder (if it stores temp/user files)
+uploads/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build output (if you build later)
+dist/
+build/
