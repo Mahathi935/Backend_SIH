@@ -215,6 +215,33 @@ app.get("/api/twilio/token", (req, res) => {
   }
 });
 
+// --- NEW: Simple availability endpoint using dummy_data.json ---
+// GET /api/check_availability/:product_code
+// Returns normalized JSON: { product_code, name, available, quantity }
+app.get('/api/check_availability/:product_code', (req, res) => {
+  const code = req.params.product_code;
+  const product = DUMMY_DB[code];
+  if (!product) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+  return res.json({
+    product_code: code,
+    name: product.name,
+    available: !!product.in_stock,
+    quantity: typeof product.quantity === 'number' ? product.quantity : null
+  });
+});
+
+// Optional: reload dummy JSON at runtime (POST)
+app.post('/api/reload_dummy', (req, res) => {
+  try {
+    loadDummy();
+    return res.json({ ok: true, count: Object.keys(DUMMY_DB).length });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // NEW: route that proxies to Python wrapper
 app.post("/api/v1/message", async (req, res) => {
   const body = req.body || {};
