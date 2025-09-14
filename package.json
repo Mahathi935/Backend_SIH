@@ -23,15 +23,10 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.14.4",
-<<<<<<< HEAD
     "node-cron": "^4.2.1",
-    "nodemon": "^3.1.10",
     "twilio": "^5.9.0"
-=======
-    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
->>>>>>> 44893fe9a3bc34c1476efcb2354558c0f05fc0e6
   }
 }
