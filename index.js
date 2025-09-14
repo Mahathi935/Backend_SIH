@@ -11,7 +11,7 @@ import multer from "multer";
 import cron from "node-cron";
 import axios from "axios";
 import pool from "./database.js";
-import translations from "./translations.json" assert {type:"json"};
+import translations from "./translations.json" with {type: "json"};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Twilio Video Demo (Adaptive)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; padding: 16px; }
+    input { margin: 0 8px 8px 0; padding: 6px; }
+    button { padding: 6px 12px; margin-right: 8px; }
+    #controls { margin-bottom: 12px; }
+    #localMedia video, #remoteMedia video { width: 280px; max-width: 45vw; border: 1px solid #ddd; margin: 6px; }
+    #logs { margin-top: 12px; background:#f7f7f7; padding:10px; border-radius:6px; max-height:160px; overflow:auto; font-size:13px; }
+  </style>
+</head>
+<body>
+  <h2>Twilio Video Demo (Adaptive)</h2>
+
+  <div id="controls">
+    Identity: <input id="identity" placeholder="alice" value="alice" />
+    Room: <input id="room" placeholder="test-room" value="test-room" />
+    <button id="joinBtn">Join</button>
+    <button id="leaveBtn" disabled>Leave</button>
+    <button id="inspectTokenBtn">Inspect Token</button>
+  </div>
+
+  <section>
+    <h4>Local</h4>
+    <div id="localMedia"></div>
+  </section>
+
+  <section>
+    <h4>Remote</h4>
+    <div id="remoteMedia"></div>
+  </section>
+
+  <div id="logs" aria-live="polite"></div>
+
+  <!-- Twilio Video SDK (CDN) -->
+  <script src="https://sdk.twilio.com/js/video/releases/2.24.0/twilio-video.min.js"></script>
+  <script>
+    // Elements
+    const identityInput = document.getElementById('identity');
+    const roomInput = document.getElementById('room');
+    const joinBtn = document.getElementById('joinBtn');
+    const leaveBtn = document.getElementById('leaveBtn');
+    const inspectTokenBtn = document.getElementById('inspectTokenBtn');
+    const localMedia = document.getElementById('localMedia');
+    const remoteMedia = document.getElementById('remoteMedia');
+    const logs = document.getElementById('logs');
+
+    // State
+    let roomInstance = null;
+    let latestTokenResponse = null;
+
+    // Helpers
+    function log(...args) {
+      console.log(...args);
+      const line = document.createElement('div');
+      line.textContent = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+      logs.prepend(line);
+    }
+
+    function clearNode(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function attachTrack(container, track) {
+      try {
+        const el = track.attach();
+        container.appendChild(el);
+        return el;
+      } catch (err) {
+        console.warn('attachTrack failed', err);
+        return null;
+      }
+    }
+
+    function detachParticipantTracks(participant) {
+      participant.tracks.forEach(pub => {
+        if (pub.track) {
+          try {
+            pub.track.detach().forEach(el => el.remove());
+          } catch (e) { /* ignore */ }
+        }
+      });
+    }
+
+    function decodeJwtPayload(jwt) {
+      try {
+        const payload = jwt.split('.')[1];
+        const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const json = atob(b64);
+        return JSON.parse(json);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    async function fetchToken(identity, room) {
+      const params = new URLSearchParams({ identity, room });
+      const res = await fetch('/api/twilio/token?' + params.toString());
+      const json = await res.json().catch(() => ({ ok: false, error: 'invalid json response' }));
+      log('token endpoint response', json);
+      latestTokenResponse = json;
+      return json;
+    }
+
+    // Inspect token button
+    inspectTokenBtn.onclick = () => {
+      if (!latestTokenResponse || !latestTokenResponse.token) {
+        alert('No token fetched yet. Click Join first.');
+        return;
+      }
+      const payload = decodeJwtPayload(latestTokenResponse.token);
+      alert('Decoded token payload:\n' + JSON.stringify(payload, null, 2));
+      console.log('Decoded JWT payload:', payload);
+    };
+
+    // Join flow
+    joinBtn.onclick = async () => {
+      const identity = identityInput.value.trim();
+      const roomName = roomInput.value.trim();
+
+      if (!identity) {
+        return alert('Please enter an identity (e.g. alice)');
+      }
+
+      try {
+        joinBtn.disabled = true;
+        log('Requesting token for identity=', identity, 'room=', roomName);
+        const tokenResp = await fetchToken(identity, roomName);
+
+        if (!tokenResp.ok || !tokenResp.token) {
+          throw new Error(tokenResp.error || 'Failed to fetch token');
+        }
+
+        // Connect with bandwidth profile + network quality
+        log('Connecting to Twilio...');
+        roomInstance = await Twilio.Video.connect(tokenResp.token, {
+          name: roomName || undefined,
+          audio: true,
+          video: { width: 640 },
+          bandwidthProfile: {
+            video: { mode: 'collaboration', maxTracks: 1, dominantSpeakerPriority: 'high' }
+          },
+          networkQuality: { local: 2, remote: 1 }
+        });
+
+        log('Connected to room', roomInstance.name, 'as', identity);
+
+        // Attach local participant tracks
+        clearNode(localMedia);
+        roomInstance.localParticipant.tracks.forEach(pub => {
+          if (pub.track) attachTrack(localMedia, pub.track);
+        });
+
+        // Handle remote participants
+        clearNode(remoteMedia);
+        roomInstance.participants.forEach(p => {
+          p.tracks.forEach(pub => {
+            if (pub.track) attachTrack(remoteMedia, pub.track);
+          });
+          p.on('trackSubscribed', track => attachTrack(remoteMedia, track));
+          p.on('trackUnsubscribed', track => {
+            try { track.detach().forEach(el => el.remove()); } catch(e){ }
+          });
+        });
+
+        // Participant events
+        roomInstance.on('participantConnected', p => {
+          log('participantConnected', p.identity);
+          p.on('trackSubscribed', track => attachTrack(remoteMedia, track));
+        });
+        roomInstance.on('participantDisconnected', p => {
+          log('participantDisconnected', p.identity);
+          detachParticipantTracks(p);
+        });
+
+        // Monitor network quality — auto switch video on/off
+        roomInstance.localParticipant.on('networkQualityLevelChanged', level => {
+          log('Local network quality changed:', level);
+          if (level <= 1) {
+            roomInstance.localParticipant.videoTracks.forEach(pub => {
+              pub.track.disable();
+              log('Disabled local video (poor network)');
+            });
+          } else {
+            roomInstance.localParticipant.videoTracks.forEach(pub => {
+              pub.track.enable();
+              log('Re-enabled local video');
+            });
+          }
+        });
+
+        joinBtn.disabled = true;
+        leaveBtn.disabled = false;
+      } catch (err) {
+        console.error('Join failed', err);
+        log('Join failed: ' + err.message);
+        alert('Failed to join Twilio room: ' + err.message);
+        joinBtn.disabled = false;
+      }
+    };
+
+    // Leave / cleanup
+    leaveBtn.onclick = () => {
+      if (!roomInstance) return;
+      try {
+        roomInstance.localParticipant.tracks.forEach(pub => {
+          if (pub.track) {
+            try {
+              pub.track.stop();
+              pub.track.detach().forEach(el => el.remove());
+            } catch (e) {}
+          }
+        });
+        roomInstance.disconnect();
+        log('Left room', roomInstance.name);
+      } catch (err) {
+        console.warn('Error leaving room', err);
+      } finally {
+        roomInstance = null;
+        clearNode(localMedia);
+        clearNode(remoteMedia);
+        joinBtn.disabled = false;
+        leaveBtn.disabled = true;
+      }
+    };
+
+    // keyboard shortcut: Enter to join
+    [identityInput, roomInput].forEach(inp => {
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') joinBtn.click();
+      });
+    });
+
+    log('Twilio demo ready. Fill identity and room, then click Join.');
+  </script>
+</body>
+</html>
