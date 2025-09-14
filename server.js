@@ -13,10 +13,12 @@ app.use(express.json());
 
 // CORS: allow the frontend origin and allow credentials (cookies) if needed
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
-app.use(cors({
-  origin: FRONTEND_ORIGIN,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: FRONTEND_ORIGIN,
+    credentials: true,
+  })
+);
 
 // load translations.json in a robust way (works regardless of Node JSON import support)
 let translations = {};
@@ -39,7 +41,11 @@ app.use(detectLang);
 // Simple translation helper
 function t(lang, key) {
   const l = ["en", "hi", "pa"].includes(lang) ? lang : "en";
-  return (translations[l] && translations[l][key]) || (translations["en"] && translations["en"][key]) || key;
+  return (
+    (translations[l] && translations[l][key]) ||
+    (translations["en"] && translations["en"][key]) ||
+    key
+  );
 }
 
 // Routes
@@ -47,7 +53,6 @@ app.get("/", (req, res) => {
   res.send("Server is running");
 });
 
-// API endpoints for frontend
 app.get("/api/hello", (req, res) => {
   res.json({ message: "hello from backend", time: new Date().toISOString() });
 });
@@ -61,7 +66,39 @@ app.get("/testdb", async (req, res) => {
     const [rows] = await pool.query("SELECT 1 + 1 AS result");
     res.json({ message: "DB Connected!", result: rows[0].result });
   } catch (err) {
-    res.status(500).json({ message: "DB connection failed", error: err.message });
+    res
+      .status(500)
+      .json({ message: "DB connection failed", error: err.message });
+  }
+});
+
+// NEW: route that proxies to Python wrapper
+app.post("/api/v1/message", async (req, res) => {
+  const body = req.body || {};
+  const messages = body.messages ?? body.text ?? body.message ?? "";
+
+  try {
+    const r = await fetch("http://127.0.0.1:5001/internal/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+
+    const json = await r.json();
+    if (!json.ok) {
+      return res
+        .status(500)
+        .json({ ok: false, error: json.error || "wrapper error" });
+    }
+
+    return res.json({
+      ok: true,
+      conversationId: body.conversationId ?? null,
+      result: json.result, // { reply, tag, precaution }
+    });
+  } catch (err) {
+    console.error("Error proxying to Python wrapper:", err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
@@ -70,4 +107,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
