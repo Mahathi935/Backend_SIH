@@ -1,0 +1,12 @@
+{
+  "ABC123": {
+    "name": "Drug X",
+    "in_stock": true,
+    "quantity": 12
+  },
+  "XYZ999": {
+    "name": "Drug Y",
+    "in_stock": false,
+    "quantity": 0
+  }
+}

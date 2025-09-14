@@ -31,6 +31,22 @@ try {
   translations = { en: {} };
 }
 
+// --- Dummy DB loader (for medicine availability) ---
+const DUMMY_DATA_PATH = new URL("./dummy_data.json", import.meta.url);
+let DUMMY_DB = {};
+function loadDummy() {
+  try {
+    const raw = fs.readFileSync(DUMMY_DATA_PATH, "utf8");
+    DUMMY_DB = JSON.parse(raw);
+    console.log("Loaded dummy_data.json with", Object.keys(DUMMY_DB).length, "items");
+  } catch (err) {
+    console.error("Failed to load dummy_data.json:", err);
+    DUMMY_DB = {};
+  }
+}
+// initial load
+loadDummy();
+
 // Middleware to detect language
 function detectLang(req, res, next) {
   req.lang = req.headers["accept-language"]?.split(",")[0] || "en";
@@ -69,6 +85,33 @@ app.get("/testdb", async (req, res) => {
     res
       .status(500)
       .json({ message: "DB connection failed", error: err.message });
+  }
+});
+
+// --- NEW: Simple availability endpoint using dummy_data.json ---
+// GET /api/check_availability/:product_code
+// Returns normalized JSON: { product_code, name, available, quantity }
+app.get('/api/check_availability/:product_code', (req, res) => {
+  const code = req.params.product_code;
+  const product = DUMMY_DB[code];
+  if (!product) {
+    return res.status(404).json({ error: 'Product not found' });
+  }
+  return res.json({
+    product_code: code,
+    name: product.name,
+    available: !!product.in_stock,
+    quantity: typeof product.quantity === 'number' ? product.quantity : null
+  });
+});
+
+// Optional: reload dummy JSON at runtime (POST)
+app.post('/api/reload_dummy', (req, res) => {
+  try {
+    loadDummy();
+    return res.json({ ok: true, count: Object.keys(DUMMY_DB).length });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
