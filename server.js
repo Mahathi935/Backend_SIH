@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import pool from "./database.js";
 import dotenv from "dotenv";
@@ -6,21 +5,25 @@ import fs from "fs";
 import cors from "cors";
 import Twilio from "twilio";
 
+import { initPool, getPool } from "./db.mjs";
+
 dotenv.config();
-console.log("TW vars loaded:", {
-  TW_ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
-  TW_API_KEY_SID: !!process.env.TWILIO_API_KEY_SID,
-  TW_API_KEY_SECRET: !!process.env.TWILIO_API_KEY_SECRET,
-});
 
 const app = express();
 app.use(express.json());
 
-// 👉 serve static files from the "public" directory
-// Place twilio.html inside a folder called "public" in your project root
-app.use(express.static("public"));
+// Initialize DB connection but don’t crash if unavailable
+initPool().catch((err) => {
+  console.warn("initPool() error:", err?.message || err);
+});
 
-// CORS: allow the frontend origin and allow credentials (cookies) if needed
+// Middleware to inject DB pool
+app.use((req, res, next) => {
+  req.db = getPool(); // may be null
+  next();
+});
+
+// CORS: allow frontend
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 app.use(
   cors({
@@ -29,7 +32,7 @@ app.use(
   })
 );
 
-// load translations.json in a robust way
+// --- Load translations ---
 let translations = {};
 try {
   const jsonPath = new URL("./translations.json", import.meta.url);
@@ -40,7 +43,7 @@ try {
   translations = { en: {} };
 }
 
-// --- Dummy DB loader (for medicine availability) ---
+// --- Load dummy data ---
 const DUMMY_DATA_PATH = new URL("./dummy_data.json", import.meta.url);
 let DUMMY_DB = {};
 function loadDummy() {
@@ -53,17 +56,15 @@ function loadDummy() {
     DUMMY_DB = {};
   }
 }
-// initial load
 loadDummy();
 
-// Middleware to detect language
+// --- Helpers ---
 function detectLang(req, res, next) {
   req.lang = req.headers["accept-language"]?.split(",")[0] || "en";
   next();
 }
 app.use(detectLang);
 
-// Simple translation helper
 function t(lang, key) {
   const l = ["en", "hi", "pa"].includes(lang) ? lang : "en";
   return (
@@ -73,7 +74,7 @@ function t(lang, key) {
   );
 }
 
-// Routes
+// --- Routes ---
 app.get("/", (req, res) => {
   res.send("Server is running");
 });
@@ -95,7 +96,6 @@ app.get("/testdb", async (req, res) => {
   }
 });
 
-// --- Simple availability endpoint using dummy_data.json ---
 app.get("/api/check_availability/:product_code", (req, res) => {
   const code = req.params.product_code;
   const product = DUMMY_DB[code];
@@ -110,7 +110,6 @@ app.get("/api/check_availability/:product_code", (req, res) => {
   });
 });
 
-// Optional: reload dummy JSON at runtime (POST)
 app.post("/api/reload_dummy", (req, res) => {
   try {
     loadDummy();
@@ -140,7 +139,6 @@ app.get("/api/twilio/token", (req, res) => {
     const AccessToken = Twilio.jwt.AccessToken;
     const VideoGrant = AccessToken.VideoGrant;
 
-    // Create token with identity
     const token = new AccessToken(
       process.env.TWILIO_ACCOUNT_SID,
       process.env.TWILIO_API_KEY_SID,
@@ -150,58 +148,10 @@ app.get("/api/twilio/token", (req, res) => {
         identity,
       }
     );
-    // --- Debug endpoint: returns raw JWT + decoded payload ---
-/*app.get("/api/twilio/debug-token", (req, res) => {
-  const identity = req.query.identity?.toString().trim();
-  const room = req.query.room?.toString().trim();
 
-  if (!identity) {
-    return res.status(400).json({ ok: false, error: "identity required" });
-  }
-
-  try {
-    const AccessToken = Twilio.jwt.AccessToken;
-    const VideoGrant = AccessToken.VideoGrant;
-
-    const token = new AccessToken(
-      process.env.TWILIO_ACCOUNT_SID,
-      process.env.TWILIO_API_KEY_SID,
-      process.env.TWILIO_API_KEY_SECRET,
-      { ttl: parseInt(process.env.TWILIO_API_KEY_TTL || "3600", 10), identity }
-    );
-
-    token.addGrant(new VideoGrant({ room: room || undefined }));
-    const jwt = token.toJwt();
-
-    // Decode payload safely
-    const parts = jwt.split(".");
-    const payloadRaw = parts[1] || "";
-    const padding = payloadRaw.length % 4 === 0 ? "" : "=".repeat(4 - (payloadRaw.length % 4));
-    const payloadJson = Buffer.from(
-      payloadRaw.replace(/-/g, "+").replace(/_/g, "/") + padding,
-      "base64"
-    ).toString("utf8");
-    let payload;
-    try {
-      payload = JSON.parse(payloadJson);
-    } catch (e) {
-      payload = { decode_error: e.message, raw: payloadJson };
-    }
-
-    // ✅ THIS return is *inside* the handler
-    return res.json({ ok: true, identity, room, jwt, payload });
-  } catch (err) {
-    console.error("debug-token error:", err && err.stack || err);
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});*/
-
-
-    // Add a VideoGrant (optionally restricted to a room)
     const grant = new VideoGrant({ room: room || undefined });
     token.addGrant(grant);
 
-    // Send the JWT back
     return res.json({
       ok: true,
       token: token.toJwt(),
@@ -215,34 +165,7 @@ app.get("/api/twilio/token", (req, res) => {
   }
 });
 
-// --- NEW: Simple availability endpoint using dummy_data.json ---
-// GET /api/check_availability/:product_code
-// Returns normalized JSON: { product_code, name, available, quantity }
-app.get('/api/check_availability/:product_code', (req, res) => {
-  const code = req.params.product_code;
-  const product = DUMMY_DB[code];
-  if (!product) {
-    return res.status(404).json({ error: 'Product not found' });
-  }
-  return res.json({
-    product_code: code,
-    name: product.name,
-    available: !!product.in_stock,
-    quantity: typeof product.quantity === 'number' ? product.quantity : null
-  });
-});
-
-// Optional: reload dummy JSON at runtime (POST)
-app.post('/api/reload_dummy', (req, res) => {
-  try {
-    loadDummy();
-    return res.json({ ok: true, count: Object.keys(DUMMY_DB).length });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// NEW: route that proxies to Python wrapper
+// --- Proxy to Python wrapper ---
 app.post("/api/v1/message", async (req, res) => {
   const body = req.body || {};
   const messages = body.messages ?? body.text ?? body.message ?? "";
@@ -262,7 +185,7 @@ app.post("/api/v1/message", async (req, res) => {
     return res.json({
       ok: true,
       conversationId: body.conversationId ?? null,
-      result: json.result, // { reply, tag, precaution }
+      result: json.result,
     });
   } catch (err) {
     console.error("Error proxying to Python wrapper:", err);
@@ -270,7 +193,37 @@ app.post("/api/v1/message", async (req, res) => {
   }
 });
 
-// Start server on Render provided PORT or local fallback
+// ---- DEV-MOCK OTP ROUTES ----
+const __DEV_OTPS = new Map(); // phone -> otp
+
+app.post("/auth/request-otp", express.json(), (req, res) => {
+  const phone = (req.body?.phone || "").toString().trim();
+  if (!phone) {
+    return res.status(400).json({ ok: false, error: "phone is required" });
+  }
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  __DEV_OTPS.set(phone, otp);
+  console.log(`[DEV-OTP] OTP for ${phone} = ${otp}`);
+  return res.json({ ok: true, message: "OTP generated (dev)", phone });
+});
+
+app.post("/auth/verify-otp", express.json(), (req, res) => {
+  const phone = (req.body?.phone || "").toString().trim();
+  const otp = (req.body?.otp || "").toString().trim();
+  if (!phone || !otp) {
+    return res.status(400).json({ ok: false, error: "phone and otp required" });
+  }
+  const expected = __DEV_OTPS.get(phone);
+  if (!expected || expected !== otp) {
+    return res.status(401).json({ ok: false, error: "invalid otp" });
+  }
+  __DEV_OTPS.delete(phone);
+  const demoToken = "demo-token-" + phone;
+  return res.json({ ok: true, token: demoToken, role: "patient" });
+});
+// ---- END DEV-MOCK OTP ----
+
+// --- Start server ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
